@@ -1,0 +1,239 @@
+diff --git a/rdb/build.gradle b/rdb/build.gradle
+index 375339a..688522e 100644
+--- a/rdb/build.gradle
++++ b/rdb/build.gradle
+@@ -30,6 +30,8 @@ dependencies {
+     implementation("com.ibm.informix:jdbc:4.50.10")
+     implementation("mysql:mysql-connector-java:5.1.46")
+     implementation(files("libs/DmJdbcDriver18.jar"))
++
++    implementation(files("libs/mariadb-java-client-3.3.2.jar"))
+ }
+ 
+ application {
+diff --git a/rdb/config/config-mariadb.yaml b/rdb/config/config-mariadb.yaml
+new file mode 100644
+index 0000000..cb0052b
+--- /dev/null
++++ b/rdb/config/config-mariadb.yaml
+@@ -0,0 +1,20 @@
++#Database properties:
++db.system: mariadb
++db.driver: org.mariadb.jdbc.Driver
++
++instances:
++  - db.address: 9.30.55.242
++    db.port: 3306
++    db.username: root
++    db.password: bXlwYXNz
++    db.connection.url: jdbc:mariadb://9.30.55.242:3306
++    db.name: demo
++
++    #Data collector properties:
++    poll.interval: 30
++    callback.interval: 20
++    otel.backend.url: http://9.46.65.155:4318/v1/metrics
++    otel.backend.using.http: true
++
++    #OTel properties:
++    otel.service.name: MariaDB1
+diff --git a/rdb/config/config.yaml b/rdb/config/config.yaml
+index f8a23d1..497a85a 100644
+--- a/rdb/config/config.yaml
++++ b/rdb/config/config.yaml
+@@ -33,4 +33,4 @@ instances:
+     otel.backend.using.http: true
+ 
+     #OTel properties:
+-    otel.service.name: DamengDC2
+\ No newline at end of file
++    otel.service.name: DamengDC2
+diff --git a/rdb/libs/mariadb-java-client-3.3.2.jar b/rdb/libs/mariadb-java-client-3.3.2.jar
+new file mode 100644
+index 0000000..f1f1759
+Binary files /dev/null and b/rdb/libs/mariadb-java-client-3.3.2.jar differ
+diff --git a/rdb/src/main/java/com/instana/agent/sensorsdk/semconv/SemanticAttributes.java b/rdb/src/main/java/com/instana/agent/sensorsdk/semconv/SemanticAttributes.java
+index 8b282b8..eed7814 100644
+--- a/rdb/src/main/java/com/instana/agent/sensorsdk/semconv/SemanticAttributes.java
++++ b/rdb/src/main/java/com/instana/agent/sensorsdk/semconv/SemanticAttributes.java
+@@ -49,6 +49,8 @@ public class SemanticAttributes {
+ 
+   public static final AttributeKey<Double> DB_BACKUP_CYCLE = AttributeKey.doubleKey("db.backup.cycle");
+ 
++  public static final AttributeKey<Double> DB_BUFFERPOOL_SIZE = AttributeKey.doubleKey("db.bufferpool.size");
++
+   public static final AttributeKey<String> STATE = AttributeKey.stringKey("state");
+   public static final AttributeKey<String> TYPE = AttributeKey.stringKey("type");
+   public static final AttributeKey<String> PATH = AttributeKey.stringKey("path");
+@@ -59,4 +61,5 @@ public class SemanticAttributes {
+   public static final AttributeKey<String> BLOCKER_SESS_ID = AttributeKey.stringKey("blocker_sess_id");
+   public static final AttributeKey<String> LOCKED_OBJ_NAME = AttributeKey.stringKey("locked_obj_name");
+   public static final AttributeKey<String> TABLESPACE_NAME = AttributeKey.stringKey("tablespace_name");
++  public static final AttributeKey<String> BUFFERPOOL_NAME = AttributeKey.stringKey("bufferpool_name");
+ }
+diff --git a/rdb/src/main/java/com/instana/dc/rdb/DbDcRegistry.java b/rdb/src/main/java/com/instana/dc/rdb/DbDcRegistry.java
+index c35ccc1..c5c46c5 100644
+--- a/rdb/src/main/java/com/instana/dc/rdb/DbDcRegistry.java
++++ b/rdb/src/main/java/com/instana/dc/rdb/DbDcRegistry.java
+@@ -8,15 +8,17 @@ import com.instana.dc.DcException;
+ import com.instana.dc.rdb.impl.dameng.DamengDc;
+ import com.instana.dc.rdb.impl.informix.InformixDc;
+ import com.instana.dc.rdb.impl.oceanbase.Oceanbase4Dc;
++import com.instana.dc.rdb.impl.mariadb.MariaDBDc;
+ 
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+ public class DbDcRegistry {
+     /**
+-     * Add all DataCollector implementations should Register Here:
++     *ria Add all DataCollector implementations should Register Here:
+      */
+     private final Map<String, Class<? extends AbstractDbDc>> map = new HashMap<String, Class<? extends AbstractDbDc>>() {{
++        put("MARIADB", MariaDBDc.class);
+         put("DAMENG", DamengDc.class);
+         put("INFORMIX", InformixDc.class);
+         put("OCEANBASE4", Oceanbase4Dc.class);
+diff --git a/rdb/src/main/java/com/instana/dc/rdb/DbDcUtil.java b/rdb/src/main/java/com/instana/dc/rdb/DbDcUtil.java
+index c83989a..b6aa52d 100644
+--- a/rdb/src/main/java/com/instana/dc/rdb/DbDcUtil.java
++++ b/rdb/src/main/java/com/instana/dc/rdb/DbDcUtil.java
+@@ -151,6 +151,10 @@ public class DbDcUtil {
+     public static final String DB_BACKUP_CYCLE_NAME = DB_BACKUP_CYCLE.getKey();
+     public static final String DB_BACKUP_CYCLE_DESC = "Backup cycle";
+ 
++    public static final String DB_BUFFERPOOL_SIZE_NAME = DB_BUFFERPOOL_SIZE.getKey();
++    public static final String DB_BUFFERPOOL_SIZE_DESC = "The size (in bytes) of the bufferpool";
++    public static final String DB_BUFFERPOOL_SIZE_KEY = BUFFERPOOL_NAME.getKey();
++
+ 
+     /* Utilities:
+      **/
+@@ -256,4 +260,4 @@ public class DbDcUtil {
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/rdb/src/main/java/com/instana/dc/rdb/DbRawMetricRegistry.java b/rdb/src/main/java/com/instana/dc/rdb/DbRawMetricRegistry.java
+index 88aeb8d..5d6cb20 100644
+--- a/rdb/src/main/java/com/instana/dc/rdb/DbRawMetricRegistry.java
++++ b/rdb/src/main/java/com/instana/dc/rdb/DbRawMetricRegistry.java
+@@ -47,6 +47,8 @@ public class DbRawMetricRegistry {
+         put(DB_DISK_USAGE_NAME, new RawMetric(UPDOWN_COUNTER, DB_DISK_USAGE_NAME, DB_DISK_USAGE_DESC, UNIT_BY, true, DB_DISK_USAGE_KEY));
+ 
+         put(DB_BACKUP_CYCLE_NAME, new RawMetric(GAUGE, DB_BACKUP_CYCLE_NAME, DB_BACKUP_CYCLE_DESC, UNIT_S, true, null));
++
++        put(DB_BUFFERPOOL_SIZE_NAME, new RawMetric(UPDOWN_COUNTER, DB_BUFFERPOOL_SIZE_NAME, DB_BUFFERPOOL_SIZE_DESC, UNIT_BY, true, DB_BUFFERPOOL_SIZE_KEY));
+     }};
+ 
+     public Map<String, RawMetric> getMap() {
+diff --git a/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBDc.java b/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBDc.java
+new file mode 100644
+index 0000000..2da461f
+--- /dev/null
++++ b/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBDc.java
+@@ -0,0 +1,75 @@
++/*
++ * (c) Copyright IBM Corp. 2023
++ * (c) Copyright Instana Inc.
++ */
++package com.instana.dc.rdb.impl.mariadb;
++
++import com.instana.dc.CalculationMode;
++import com.instana.dc.DcUtil;
++import com.instana.dc.rdb.AbstractDbDc;
++import com.instana.dc.rdb.DbDcUtil;
++import io.opentelemetry.api.OpenTelemetry;
++
++import java.sql.Connection;
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.util.Collections;
++import java.util.List;
++import java.util.Map;
++import java.util.logging.Level;
++import java.util.logging.Logger;
++
++import static com.instana.agent.sensorsdk.semconv.SemanticAttributes.*;
++import static com.instana.dc.rdb.DbDcUtil.*;
++import static com.instana.dc.rdb.impl.mariadb.MariaDBUtil.*;
++
++
++public class MariaDBDc extends AbstractDbDc {
++    private static final Logger logger = Logger.getLogger(MariaDBDc.class.getName());
++
++    public MariaDBDc(Map<String, Object> properties, String dbSystem, String dbDriver) throws SQLException {
++        super(properties, dbSystem, dbDriver);
++        setDbPassword(DcUtil.base64Decode(getDbPassword()));
++
++        findDbName();
++        if (getServiceInstanceId() == null) {
++            setServiceInstanceId(getDbAddress() + ":" + getDbPort() + "@" + getDbName());
++        }
++    }
++
++    private void findDbName() throws SQLException {
++        try (Connection connection = getConnection()) {
++            ResultSet rs = DbDcUtil.executeQuery(connection, DB_NAME_SQL);
++            if (getDbName() == null)
++                setDbName(rs.getString(1));
++        }
++    }
++
++    @Override
++    public void registerMetrics() {
++        super.registerMetrics();
++	getRawMetric(DB_BUFFERPOOL_SIZE_NAME).setCalculationMode(CalculationMode.DIRECT);
++    }
++
++    @Override
++    public void collectData() {
++        logger.info("Start to collect metrics");
++        try (Connection conn = getConnection()) {
++            getRawMetric(DB_STATUS_NAME).setValue(1);
++            getRawMetric(DB_TABLESPACE_SIZE_NAME).setValue(getMetricWithSql(conn, TABLESPACE_SIZE_SQL, DB_TABLESPACE_SIZE_KEY));
++            getRawMetric(DB_TABLESPACE_USED_NAME).setValue(getMetricWithSql(conn, TABLESPACE_USED_SQL, DB_TABLESPACE_USED_KEY));
++            getRawMetric(DB_SESSION_COUNT_NAME).setValue(getSimpleMetricWithSql(conn, SESSION_COUNT_SQL));
++            getRawMetric(DB_SESSION_ACTIVE_COUNT_NAME).setValue(getSimpleMetricWithSql(conn, SESSION_ACTIVE_COUNT_SQL));
++            getRawMetric(DB_SQL_COUNT_NAME).setValue(getSimpleMetricWithSql(conn, SQL_COUNT_SQL));
++            getRawMetric(DB_LOCK_TIME_NAME).setValue(getMetricWithSql(conn, LOCK_TIME_SQL));
++            getRawMetric(DB_SQL_ELAPSED_TIME_NAME).setValue(getMetricWithSql(conn, SQL_ELAPSED_TIME_SQL));
++            getRawMetric(DB_TRANSACTION_COUNT_NAME).setValue(getSimpleMetricWithSql(conn, TRANSACTION_COUNT_SQL));
++	    getRawMetric(DB_BUFFERPOOL_SIZE_NAME).setValue(getSimpleMetricWithSql(conn,BUFFERPOOL_SIZE_SQL));
++	    //getRawMetric(DB_ENGINE_DETAIL_NAME).setValue(getSimpleMetricWithSql(conn, ENGINE_DETAIL_SQL));
++
++        } catch (Exception e) {
++            logger.log(Level.SEVERE, "Failed to update metric with exception", e);
++            getRawMetric(DB_STATUS_NAME).setValue(0);
++        }
++    }
++}
+diff --git a/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBUtil.java b/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBUtil.java
+new file mode 100644
+index 0000000..e62f691
+--- /dev/null
++++ b/rdb/src/main/java/com/instana/dc/rdb/impl/mariadb/MariaDBUtil.java
+@@ -0,0 +1,21 @@
++/*
++ * (c) Copyright IBM Corp. 2023
++ * (c) Copyright Instana Inc.
++ */
++package com.instana.dc.rdb.impl.mariadb;
++
++public class MariaDBUtil {
++    public static final String DB_NAME_SQL = "show databases";
++    public static final String TABLESPACE_SIZE_SQL = "select space as tablespace_id, name as tablespace_name, allocated_size from INFORMATION_SCHEMA.INNODB_SYS_TABLESPACES";
++    public static final String TABLESPACE_USED_SQL = "select space as tablespace_id, name as tablespace_name, file_size from INFORMATION_SCHEMA.INNODB_SYS_TABLESPACES";
++    public static final String SESSION_COUNT_SQL = "select count(*) from information_schema.processlist";
++    public static final String SESSION_ACTIVE_COUNT_SQL = "select count(*) from information_schema.processlist";
++    public static final String SQL_COUNT_SQL = "select sum(statements) from sys.host_summary";
++    public static final String LOCK_TIME_SQL = "select sum(sum_lock_time)/1000000000 from performance_schema.events_statements_summary_by_digest WHERE schema_name IS NOT NULL";
++    public static final String SQL_ELAPSED_TIME_SQL = "select ROUND((SUM(sum_timer_wait) / SUM(count_star)) / 1000000000) AS avg_sec FROM performance_schema.events_statements_summary_by_digest WHERE schema_name IS NOT NULL";
++    public static final String TRANSACTION_COUNT_SQL = "select count(*) from information_schema.innodb_trx";
++    public static final String BUFFERPOOL_SIZE_SQL = "select pool_size  from information_schema.INNODB_BUFFER_POOL_STATS";
++
++    //public static final String ENGINE_DETAIL_SQL = "select engine, transactions, support, comment from engines";
++    //public static final String BUFFERPOOL_USED_SQL = "select pool_id, pool_size  from information_schema.INNODB_BUFFER_POOL_STATS;
++}
